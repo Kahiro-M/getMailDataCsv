@@ -23,6 +23,7 @@ from email.utils import parsedate_to_datetime
 from email.utils import getaddresses
 from html import unescape
 import configparser
+from mkdir_datetime import get_today_date, get_now_time
 
 # ------- 任意：HTML整形用（無ければフォールバック） -------
 try:
@@ -403,6 +404,11 @@ def eval_date_token(token: str, mail_dt: datetime | None) -> bool:
     return False
 # ========== メイン処理 ==========
 def main():
+    
+    print('====== POP3メールデータcsv取得アプリ ======')
+    print('                             v.1.0.0')
+    print(f"------ 処理開始 {get_today_date('/')+' '+get_now_time(':')} ------")
+
     # 入力チェック
     missing = [k for k, v in {
         "POP3_HOST": POP3_HOST,
@@ -573,6 +579,7 @@ def main():
             M.quit()
         except Exception:
             pass
+    print(f"------ 処理終了 {get_today_date('/')+' '+get_now_time(':')} ------")
 
 if __name__ == "__main__":
     main()
