@@ -130,6 +130,32 @@ def sanitize_html(html):
         return str(soup)
     return html  # BeautifulSoup未導入時はそのまま
 
+def extract_body_content(html: str, *, strip_script_style: bool = True) -> str:
+    """
+    HTML文字列から <body>～</body> の中身だけを抽出して返す共通関数。
+    - <body>が無い／壊れたHTMLでも例外にならないようにフォールバック。
+    - script/styleを除去したい場合は strip_script_style=True を指定。
+
+    戻り値: <body>の内側のHTML（前後空白を削った文字列）
+    """
+    if not html:
+        return ""
+
+    # BOM/ヌル文字などの混入対策（CSV出力時の不正文字対策）
+    cleaned = html.replace("\ufeff", "").replace("\x00", "")
+
+    # 改行ありの全文検索。<BODY>など大文字にも対応
+    m = re.search(r"<body\b[^>]*>(.*?)</body\s*>", cleaned, re.IGNORECASE | re.DOTALL)
+    body_inner = (m.group(1) if m else cleaned).strip()
+
+    if strip_script_style:
+        # <script>…</script> と <style>…</style> を丸ごと除去（改行も跨ぐ）
+        body_inner = re.sub(r"<script\b[^>]*>.*?</script\s*>", "", body_inner, flags=re.IGNORECASE | re.DOTALL)
+        body_inner = re.sub(r"<style\b[^>]*>.*?</style\s*>", "", body_inner, flags=re.IGNORECASE | re.DOTALL)
+
+    # 余計な前後空白を最終整形
+    return body_inner.strip()
+
 def load_state():
     """既処理UIDLを読み込む（ローカル重複回避用）"""
     if not LOCAL_DEDUPE:
@@ -414,7 +440,7 @@ def main():
                     if not text_body and html_raw:
                         text_body = html_to_text(html_raw)
 
-                    html_clean = sanitize_html(html_raw or "")
+                    html_clean = extract_body_content(sanitize_html(html_raw or ""),strip_script_style=True)
 
                     # CSV行として書き出し
                     row = {
