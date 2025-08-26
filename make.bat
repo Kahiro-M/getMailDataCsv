@@ -1,0 +1,1 @@
+pyinstaller --onefile --icon=icon.ico getGmksMailMagazine.py -n getGmksMailMagazine

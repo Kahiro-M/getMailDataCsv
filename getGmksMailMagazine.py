@@ -31,11 +31,32 @@ except ImportError:
     BeautifulSoup = None
 
 # ====== 設定読み込み ======
-CONFIG_PATH = pathlib.Path(__file__).with_name("config.ini")
+if getattr(sys, 'frozen', False):
+    # exe 実行時：exe のあるフォルダ
+    CONFIG_PATH = pathlib.Path(sys.executable).with_name("config.ini")
+else:
+    # 通常の .py 実行時：このファイルのあるフォルダ
+    CONFIG_PATH = pathlib.Path(__file__).with_name("config.ini")
 
 # コメントは別行に書く運用ですが、念のため #/; のインラインコメントも許容
 config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
 config.read(CONFIG_PATH, encoding="utf-8")
+
+
+# 実行ファイルのあるディレクトリを取得
+if getattr(sys, "frozen", False):  # exe 実行時
+    BASE_DIR = pathlib.Path(sys.executable).parent
+else:                              # .py 実行時
+    BASE_DIR = pathlib.Path(__file__).parent
+
+def resolve_path(path_str: str) -> pathlib.Path:
+    """
+    INIに書かれたパス文字列を解決する。
+    - 絶対パスならそのまま
+    - 相対パスなら exe/.py のあるフォルダ基準に変換
+    """
+    p = pathlib.Path(path_str).expanduser()
+    return p if p.is_absolute() else (BASE_DIR / p)
 
 # POP3設定
 POP3_HOST = config.get("POP3", "host", fallback="")
@@ -46,10 +67,10 @@ POP3_USE_SSL = config.getboolean("POP3", "use_ssl", fallback=True)
 POP3_MAX_FETCH = config.getint("POP3", "max_fetch", fallback=200)
 
 # 出力
-OUT_DIR = config.get("OUTPUT", "out_dir", fallback="./out_csv")
+OUT_DIR = resolve_path(config.get("OUTPUT", "out_dir", fallback="./out_csv"))
 FILENAME_PREFIX = config.get("OUTPUT", "filename_prefix", fallback="mails_")
 LOCAL_DEDUPE = config.getboolean("OUTPUT", "local_dedupe", fallback=False)
-STATE_FILE = config.get("OUTPUT", "state_file", fallback="./processed_uidl.txt")
+STATE_FILE = resolve_path(config.get("OUTPUT", "state_file", fallback="./processed_uidl.txt"))
 
 # kintone設定
 KINTONE_SUBDOMAIN = config.get("KINTONE", "subdomain", fallback="")
