@@ -35,5 +35,11 @@ text = TextBody
 html = HtmlBody
 
 [FILTER]
-; 例: 件名に「sample」か「Hello World」を含み、直近7日以内、かつ 2025-08-01以降
+# 指定可能なフィルタ
+#   件名    SUBJECT:/.../
+#   差出人  FROM:/.../
+#   宛先    TO:/.../
+#   CC      CC:/.../
+#   日付    DATE>=..., DATE<NOW-7d など
+# 例: 件名に「sample」か「Hello World」を含み、直近7日以内、かつ 2025-08-01以降
 rule = (SUBJECT:/sample/ OR SUBJECT:/Hello\sWorld/) AND DATE>=NOW-7d AND DATE>=2025-08-01

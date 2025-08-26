@@ -20,6 +20,7 @@ from email import policy
 from email.parser import BytesParser
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
+from email.utils import getaddresses
 from html import unescape
 import configparser
 
@@ -156,6 +157,20 @@ def extract_body_content(html: str, *, strip_script_style: bool = True) -> str:
     # 余計な前後空白を最終整形
     return body_inner.strip()
 
+def extract_addresses_only(header_value: str) -> list[str]:
+    """
+    From/Toなどのヘッダ文字列から、メールアドレスだけを抜き出して小文字で返す。
+    表示名は無視。壊れた/空のヘッダは空リスト。
+    """
+    if not header_value:
+        return []
+    # 既存のデコーダでMIMEエンコード解除
+    decoded = decode_mime_header(header_value)
+    # getaddressesで (display_name, addr) の配列に展開
+    pairs = getaddresses([decoded])
+    # アドレスのみを小文字で返す
+    return [addr.strip().lower() for _, addr in pairs if addr and "@" in addr]
+
 def load_state():
     """既処理UIDLを読み込む（ローカル重複回避用）"""
     if not LOCAL_DEDUPE:
@@ -179,6 +194,9 @@ def save_state(uidls):
 TOKEN_REGEX = re.compile(
     r"""
     SUBJECT:/.*?/         |   # SUBJECT:/.../
+    FROM:/.*?/            |   # FROM:/.../
+    TO:/.*?/              |   # TO:/.../
+    CC:/.*?/              |   # CC:/.../
     DATE[<>]=?\S+         |   # DATE>=..., DATE<NOW-7d など
     AND                   |   # AND
     OR                    |   # OR
@@ -196,7 +214,14 @@ def tokenize(rule: str):
     compact = "".join(tokens)
     # 括弧と英字・スラッシュ以外はスペースが入り得るので、厳格チェックはしない
     return [t.upper() if t in ("AND", "OR") else t for t in tokens]
-def parse_and_eval(rule: str, subject: str, mail_dt: datetime | None) -> bool:
+def parse_and_eval(
+        rule: str,
+        subject: str,
+        from_addrs: list[str],
+        to_addrs: list[str],
+        cc_addrs: list[str],
+        mail_dt: datetime | None
+    ) -> bool:
     """
     フィルタ式を構文解析しつつ評価する
       - SUBJECT:/regex/
@@ -228,6 +253,7 @@ def parse_and_eval(rule: str, subject: str, mail_dt: datetime | None) -> bool:
         if idx >= len(tokens):
             raise ValueError("Unexpected end of filter rule")
         tok = tokens[idx]
+
         # 括弧
         if tok == "(":
             idx += 1
@@ -236,6 +262,7 @@ def parse_and_eval(rule: str, subject: str, mail_dt: datetime | None) -> bool:
                 raise ValueError("Missing closing parenthesis in filter rule")
             idx += 1
             return val
+
         # SUBJECT:/.../
         if tok.startswith("SUBJECT:/") and tok.endswith("/"):
             # 非貪欲に中身を取る
@@ -249,6 +276,49 @@ def parse_and_eval(rule: str, subject: str, mail_dt: datetime | None) -> bool:
             except re.error:
                 # 正規表現エラー → 不一致扱い
                 return False
+
+        # FROM:/.../
+        if tok.upper().startswith("FROM:/") and tok.endswith("/"):
+            m = re.match(r"(?i)FROM:/(.*)/$", tok, flags=re.DOTALL)
+            if not m:
+                raise ValueError(f"Invalid FROM token: {tok}")
+            pattern = m.group(1)
+            idx += 1
+            try:
+                rgx = re.compile(pattern, flags=re.IGNORECASE)
+            except re.error:
+                return False
+            # いずれかのアドレスがマッチしたらTrue
+            return any(rgx.search(addr) for addr in (from_addrs or []))
+
+        # TO:/.../
+        if tok.upper().startswith("TO:/") and tok.endswith("/"):
+            m = re.match(r"(?i)TO:/(.*)/$", tok, flags=re.DOTALL)
+            if not m:
+                raise ValueError(f"Invalid TO token: {tok}")
+            pattern = m.group(1)
+            idx += 1
+            try:
+                rgx = re.compile(pattern, flags=re.IGNORECASE)
+            except re.error:
+                return False
+            # いずれかのアドレスがマッチしたらTrue
+            return any(rgx.search(addr) for addr in (to_addrs or []))
+
+        # CC:/.../
+        if tok.upper().startswith("CC:/") and tok.endswith("/"):
+            m = re.match(r"(?i)CC:/(.*)/$", tok, flags=re.DOTALL)
+            if not m:
+                raise ValueError(f"Invalid CC token: {tok}")
+            pattern = m.group(1)
+            idx += 1
+            try:
+                rgx = re.compile(pattern, flags=re.IGNORECASE)
+            except re.error:
+                return False
+            # いずれかのアドレスがマッチしたらTrue
+            return any(rgx.search(addr) for addr in (cc_addrs or []))
+
         # DATE...
         if tok.upper().startswith("DATE"):
             ok = eval_date_token(tok, mail_dt)
@@ -381,6 +451,8 @@ def main():
                     # ヘッダ
                     subject = decode_mime_header(msg["Subject"])
                     from_ = decode_mime_header(msg.get("From", ""))
+                    to_ = decode_mime_header(msg.get("To", ""))
+                    cc_ = decode_mime_header(msg.get("Cc", ""))
 
                     # 受信日時
                     date_iso = ""
@@ -399,7 +471,18 @@ def main():
                     # フィルタ評価（指定があれば）
                     if FILTER_RULE:
                         try:
-                            if not parse_and_eval(FILTER_RULE, subject, mail_dt):
+                            # From/To/CCアドレス配列を準備
+                            from_addrs = extract_addresses_only(from_)
+                            to_addrs = extract_addresses_only(to_)
+                            cc_addrs = extract_addresses_only(cc_)
+                            if not parse_and_eval(
+                                rule=FILTER_RULE,
+                                subject=subject,
+                                from_addrs=from_addrs,
+                                to_addrs=to_addrs,
+                                cc_addrs=cc_addrs,
+                                mail_dt=mail_dt
+                                ):
                                 continue  # 条件外はスキップ
                         except Exception as e:
                             # ルール記述ミス時は安全側（取り込まない）
