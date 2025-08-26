@@ -208,5 +208,5 @@ __marimo__/
 
 *.ini
 .vscode/*
-out_csv/*.csv
+out_csv/*
 processed_uidl.txt

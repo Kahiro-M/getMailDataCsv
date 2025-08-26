@@ -32,14 +32,15 @@ except ImportError:
 # ====== 設定読み込み ======
 CONFIG_PATH = pathlib.Path(__file__).with_name("config.ini")
 
-config = configparser.ConfigParser()
+# コメントは別行に書く運用ですが、念のため #/; のインラインコメントも許容
+config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
 config.read(CONFIG_PATH, encoding="utf-8")
 
 # POP3設定
-POP3_HOST = config.get("POP3", "host")
+POP3_HOST = config.get("POP3", "host", fallback="")
 POP3_PORT = config.getint("POP3", "port", fallback=995)
-POP3_USER = config.get("POP3", "user")
-POP3_PASS = config.get("POP3", "password")
+POP3_USER = config.get("POP3", "user", fallback="")
+POP3_PASS = config.get("POP3", "password", fallback="")
 POP3_USE_SSL = config.getboolean("POP3", "use_ssl", fallback=True)
 POP3_MAX_FETCH = config.getint("POP3", "max_fetch", fallback=200)
 
@@ -50,10 +51,10 @@ LOCAL_DEDUPE = config.getboolean("OUTPUT", "local_dedupe", fallback=False)
 STATE_FILE = config.get("OUTPUT", "state_file", fallback="./processed_uidl.txt")
 
 # kintone設定
-KINTONE_SUBDOMAIN = config.get("KINTONE", "subdomain")
+KINTONE_SUBDOMAIN = config.get("KINTONE", "subdomain", fallback="")
 KINTONE_DOMAIN = config.get("KINTONE", "domain", fallback="cybozu.com")
-KINTONE_APP_ID = config.getint("KINTONE", "app_id")
-KINTONE_API_TOKEN = config.get("KINTONE", "api_token")
+KINTONE_APP_ID = config.get("KINTONE", "app_id", fallback="")
+KINTONE_API_TOKEN = config.get("KINTONE", "api_token", fallback="")
 
 # フィールドコード
 FIELD_UIDL = config.get("FIELD", "uidl", fallback="Uidl")
@@ -65,7 +66,15 @@ FIELD_HTML = config.get("FIELD", "html", fallback="HtmlBody")
 
 CSV_HEADERS = [FIELD_UIDL, FIELD_SUBJECT, FIELD_FROM, FIELD_DATE, FIELD_TEXT, FIELD_HTML]
 
-# ====== ユーティリティ ======
+# [FILTER] ・・・フィルタ式（空なら全件対象）
+FILTER_RULE = config.get("FILTER", "rule", fallback="").strip()
+
+# ---- タイムゾーン（メールのDateにTZが無い場合の補完用）：Asia/Tokyoを既定に ----
+# Python 3.9+ なら zoneinfo が使えるが、依存を増やさないため JST固定を自作
+JST = timezone(timedelta(hours=9), name="JST")
+
+
+# ========== ユーティリティ ==========
 def decode_mime_header(raw):
     """MIMEヘッダ（=?UTF-8?B?...?=）をデコードして文字列化"""
     if raw is None:
@@ -140,11 +149,148 @@ def save_state(uidls):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("\n".join(all_u) + "\n", encoding="utf-8")
 
-# ====== メイン処理 ======
+# ========== フィルタ式（AND/OR/()、SUBJECT、DATE>=NOW-◯d/h/m etc.） ==========
+TOKEN_REGEX = re.compile(
+    r"""
+    SUBJECT:/.*?/         |   # SUBJECT:/.../
+    DATE[<>]=?\S+         |   # DATE>=..., DATE<NOW-7d など
+    AND                   |   # AND
+    OR                    |   # OR
+    \(|\)                     # 括弧
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+DATE_REL_REGEX = re.compile(r"^NOW-(\d+)([dhm])$", re.IGNORECASE)
+def tokenize(rule: str):
+    """ルール文字列をトークン列に分割（未知の断片は無視せずエラーにしたいので厳格に）"""
+    if not rule:
+        return []
+    tokens = TOKEN_REGEX.findall(rule)
+    # スペースや改行で分割された不要部分が残っていないか簡易チェック
+    compact = "".join(tokens)
+    # 括弧と英字・スラッシュ以外はスペースが入り得るので、厳格チェックはしない
+    return [t.upper() if t in ("AND", "OR") else t for t in tokens]
+def parse_and_eval(rule: str, subject: str, mail_dt: datetime | None) -> bool:
+    """
+    フィルタ式を構文解析しつつ評価する
+      - SUBJECT:/regex/
+      - DATE(>=|<=|>|<)(YYYY-MM-DD | NOW-◯d/h/m)
+      - AND / OR / ()
+    """
+    tokens = tokenize(rule)
+    if not tokens:
+        return True  # ルール未指定なら全件OK
+    idx = 0
+    def parse_expr():
+        nonlocal idx
+        value = parse_term()
+        while idx < len(tokens) and tokens[idx] == "OR":
+            idx += 1
+            rhs = parse_term()
+            value = value or rhs
+        return value
+    def parse_term():
+        nonlocal idx
+        value = parse_factor()
+        while idx < len(tokens) and tokens[idx] == "AND":
+            idx += 1
+            rhs = parse_factor()
+            value = value and rhs
+        return value
+    def parse_factor():
+        nonlocal idx
+        if idx >= len(tokens):
+            raise ValueError("Unexpected end of filter rule")
+        tok = tokens[idx]
+        # 括弧
+        if tok == "(":
+            idx += 1
+            val = parse_expr()
+            if idx >= len(tokens) or tokens[idx] != ")":
+                raise ValueError("Missing closing parenthesis in filter rule")
+            idx += 1
+            return val
+        # SUBJECT:/.../
+        if tok.startswith("SUBJECT:/") and tok.endswith("/"):
+            # 非貪欲に中身を取る
+            m = re.match(r"SUBJECT:/(.*)/$", tok, flags=re.IGNORECASE | re.DOTALL)
+            if not m:
+                raise ValueError(f"Invalid SUBJECT token: {tok}")
+            pattern = m.group(1)
+            idx += 1
+            try:
+                return re.search(pattern, subject or "", flags=re.IGNORECASE) is not None
+            except re.error:
+                # 正規表現エラー → 不一致扱い
+                return False
+        # DATE...
+        if tok.upper().startswith("DATE"):
+            ok = eval_date_token(tok, mail_dt)
+            idx += 1
+            return ok
+        raise ValueError(f"Unexpected token: {tok}")
+    return parse_expr()
+def eval_date_token(token: str, mail_dt: datetime | None) -> bool:
+    """
+    DATE比較を評価する。
+    サポート:
+      DATE>=YYYY-MM-DD
+      DATE<=YYYY-MM-DD
+      DATE>YYYY-MM-DD
+      DATE<YYYY-MM-DD
+      DATE>=NOW-7d / NOW-24h / NOW-30m（相対）
+    """
+    m = re.match(r"^DATE([<>]=?)(\S+)$", token, flags=re.IGNORECASE)
+    if not m:
+        return False
+    op = m.group(1)
+    rhs = m.group(2)
+    # メールの日時が無ければ false（DATE条件は満たせない）
+    if mail_dt is None:
+        return False
+    # 比較対象時刻 cmp_dt を作る
+    cmp_dt: datetime
+    rel = DATE_REL_REGEX.match(rhs)
+    if rel:
+        amount = int(rel.group(1))
+        unit = rel.group(2).lower()
+        delta = timedelta(days=amount) if unit == "d" else (
+            timedelta(hours=amount) if unit == "h" else timedelta(minutes=amount)
+        )
+        # mail_dt のタイムゾーンに合わせて NOW を生成（無い場合は JST）
+        base_tz = mail_dt.tzinfo or JST
+        cmp_dt = datetime.now(base_tz) - delta
+    else:
+        # 絶対日付（YYYY-MM-DD または ISO日時想定）
+        # 日付だけなら一日の始まりで比較、TZ無しならJST扱い
+        try:
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", rhs):
+                y, mth, d = map(int, rhs.split("-"))
+                cmp_dt = datetime(y, mth, d, 0, 0, 0, tzinfo=(mail_dt.tzinfo or JST))
+            else:
+                # ISO8601想定
+                cmp_dt = datetime.fromisoformat(rhs)
+                if cmp_dt.tzinfo is None:
+                    cmp_dt = cmp_dt.replace(tzinfo=(mail_dt.tzinfo or JST))
+        except Exception:
+            return False
+    # 比較（時刻比較）
+    if op == ">=":
+        return mail_dt >= cmp_dt
+    if op == "<=":
+        return mail_dt <= cmp_dt
+    if op == ">":
+        return mail_dt > cmp_dt
+    if op == "<":
+        return mail_dt < cmp_dt
+    return False
+# ========== メイン処理 ==========
 def main():
     # 入力チェック
     missing = [k for k, v in {
-        "POP3_HOST": POP3_HOST, "POP3_USER": POP3_USER, "POP3_PASS": POP3_PASS
+        "POP3_HOST": POP3_HOST,
+        "POP3_USER": POP3_USER,
+        "POP3_PASS": POP3_PASS
     }.items() if not v]
     if missing:
         print(f"環境変数が不足しています: {', '.join(missing)}", file=sys.stderr)
@@ -210,21 +356,32 @@ def main():
                     subject = decode_mime_header(msg["Subject"])
                     from_ = decode_mime_header(msg.get("From", ""))
 
-                    # 日時（ISO 8601で）
-                    date_hdr = msg.get("Date")
+                    # 受信日時
                     date_iso = ""
-                    if date_hdr:
+                    mail_dt = None
+                    if msg.get("Date"):
                         try:
-                            dt = parsedate_to_datetime(date_hdr)
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=timezone.utc)
-                            date_iso = dt.astimezone().isoformat(timespec="seconds")
+                            mail_dt = parsedate_to_datetime(msg.get("Date"))
+                            if mail_dt.tzinfo is None:
+                                # TZが無いヘッダはJSTと仮定
+                                mail_dt = mail_dt.replace(tzinfo=JST)
+                            date_iso = mail_dt.astimezone().strftime("%Y-%m-%d %H:%M")
                         except Exception:
+                            mail_dt = None
                             date_iso = ""
 
-                    # 本文抽出（text/plain優先）
-                    text_body = None
-                    html_raw = None
+                    # フィルタ評価（指定があれば）
+                    if FILTER_RULE:
+                        try:
+                            if not parse_and_eval(FILTER_RULE, subject, mail_dt):
+                                continue  # 条件外はスキップ
+                        except Exception as e:
+                            # ルール記述ミス時は安全側（取り込まない）
+                            print(f"[WARN] フィルタ評価失敗: {e}", file=sys.stderr)
+                            continue
+
+                    # 本文抽出（text/plain優先、なければHTML→テキスト化）
+                    text_body, html_raw = None, None
                     if msg.is_multipart():
                         for part in msg.walk():
                             if part.get_content_disposition() == "attachment":

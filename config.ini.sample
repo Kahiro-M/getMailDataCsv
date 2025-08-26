@@ -33,3 +33,7 @@ from = From
 date = Date
 text = TextBody
 html = HtmlBody
+
+[FILTER]
+; 例: 件名に「sample」か「Hello World」を含み、直近7日以内、かつ 2025-08-01以降
+rule = (SUBJECT:/sample/ OR SUBJECT:/Hello\sWorld/) AND DATE>=NOW-7d AND DATE>=2025-08-01
