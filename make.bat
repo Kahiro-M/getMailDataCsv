@@ -1,1 +1,1 @@
-pyinstaller --onefile --icon=icon.ico getGmksMailMagazine.py -n getGmksMailMagazine
+pyinstaller --onefile --icon=icon.ico getMailDataCsv.py -n getMailDataCsv
