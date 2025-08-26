@@ -205,3 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+*.ini
+.vscode/*
+out_csv/*.csv
+processed_uidl.txt
