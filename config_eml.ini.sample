@@ -1,0 +1,45 @@
+[INPUT]
+# .eml保管ディレクトリ
+eml_dir = ./eml_in
+
+[OUTPUT]
+# CSV出力設定
+out_dir = ./out_csv
+filename_prefix = mails_
+# ローカルでもUIDL重複チェックを行うなら1、しないなら0
+local_dedupe = 1
+state_file = ./processed_uidl.txt
+
+[KINTONE]
+# CSV列を合わせるための情報（cli-kintoneで利用）
+subdomain = your-subdomain
+domain = cybozu.com
+app_id = 123
+api_token = "your_api_token_here"
+
+[FIELD]
+# kintoneのフィールドコードとCSV列名
+uidl = Uidl
+subject = Subject
+from = From
+date = Date
+text = TextBody
+html = HtmlBody
+
+[MODE]
+# 日本時間形式で出力する場合(出力イメージ 2025-08-01 15:30)
+# date_format = %Y-%m-%d %H:%M
+# timezone = local
+# ISO8601形式で出力する場合(出力イメージ 2025-08-01T15:30:00Z)
+# date_format = %Y-%m-%dT%H:%M:%SZ
+# timezone = UTC
+
+[FILTER]
+# 指定可能なフィルタ
+#   件名    SUBJECT:/.../
+#   差出人  FROM:/.../
+#   宛先    TO:/.../
+#   CC      CC:/.../
+#   日付    DATE>=..., DATE<NOW-7d など
+# 例: 件名に「sample」か「Hello World」を含み、直近7日以内、かつ 2025-08-01以降
+rule = (SUBJECT:/sample/ OR SUBJECT:/Hello\sWorld/) AND DATE>=NOW-7d AND DATE>=2025-08-01
