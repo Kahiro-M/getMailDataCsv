@@ -40,7 +40,7 @@ else:
     CONFIG_PATH = pathlib.Path(__file__).with_name("config.ini")
 
 # コメントは別行に書く運用ですが、念のため #/; のインラインコメントも許容
-config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+config = configparser.RawConfigParser(inline_comment_prefixes=('#', ';'))
 config.read(CONFIG_PATH, encoding="utf-8")
 
 
@@ -88,6 +88,10 @@ FIELD_TEXT = config.get("FIELD", "text", fallback="TextBody")
 FIELD_HTML = config.get("FIELD", "html", fallback="HtmlBody")
 
 CSV_HEADERS = [FIELD_UIDL, FIELD_SUBJECT, FIELD_FROM, FIELD_DATE, FIELD_TEXT, FIELD_HTML]
+
+# モード
+DATE_FORMAT = config.get("MODE", "date_format", fallback="%Y-%m-%d %H:%M")
+TIMEZONE_MODE = config.get("MODE", "timezone", fallback="local").lower()
 
 # [FILTER] ・・・フィルタ式（空なら全件対象）
 FILTER_RULE = config.get("FILTER", "rule", fallback="").strip()
@@ -406,7 +410,8 @@ def eval_date_token(token: str, mail_dt: datetime | None) -> bool:
 def main():
     
     print('====== POP3メールデータcsv取得アプリ ======')
-    print('                             v.1.0.0')
+    print('                             v.1.0.1')
+    print('・出力CSVの日時フォーマット指定機能を追加')
     print(f"------ 処理開始 {get_today_date('/')+' '+get_now_time(':')} ------")
 
     # 入力チェック
@@ -490,7 +495,13 @@ def main():
                             if mail_dt.tzinfo is None:
                                 # TZが無いヘッダはJSTと仮定
                                 mail_dt = mail_dt.replace(tzinfo=JST)
-                            date_iso = mail_dt.astimezone().strftime("%Y-%m-%d %H:%M")
+                            # タイムゾーン選択
+                            if TIMEZONE_MODE == "utc":
+                                dt_out = mail_dt.astimezone(timezone.utc)
+                            else:
+                                dt_out = mail_dt.astimezone()  # ローカル
+                            # 出力フォーマット
+                            date_iso = dt_out.strftime(DATE_FORMAT)
                         except Exception:
                             mail_dt = None
                             date_iso = ""

@@ -15,7 +15,8 @@ max_fetch = 200
 # CSV出力設定
 out_dir = ./out_csv
 filename_prefix = mails_
-local_dedupe = 1           ; ローカルでもUIDL重複チェックを行うなら1
+# ローカルでもUIDL重複チェックを行うなら1、しないなら0
+local_dedupe = 1
 state_file = ./processed_uidl.txt
 
 [KINTONE]
@@ -33,6 +34,14 @@ from = From
 date = Date
 text = TextBody
 html = HtmlBody
+
+[MODE]
+# 日本時間形式で出力する場合(出力イメージ 2025-08-01 15:30)
+# date_format = %Y-%m-%d %H:%M
+# timezone = local
+# ISO8601形式で出力する場合(出力イメージ 2025-08-01T15:30:00Z)
+# date_format = %Y-%m-%dT%H:%M:%SZ
+# timezone = UTC
 
 [FILTER]
 # 指定可能なフィルタ
